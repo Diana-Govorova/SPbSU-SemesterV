@@ -1,0 +1,132 @@
+---
+title: "Kursovaya"
+author: "Govorova D.I."
+date: '25 12 2021 '
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+```{r}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Начало работы
+
+Подгрузка необходимых библиотек, установка директории и другое
+
+```{r, eval = F}
+rm(list=ls())
+getwd()
+setwd("Z:/project/В разработке/скоринг")
+# Подключение библиотек
+library("randomForest")
+library("lubridate")
+library("tidyr") 
+library("dplyr") 
+library("stringr")
+library("ggplot2")
+library("xlsx")
+library ("pROC")
+library ("ROCR")
+library("woeBinning")
+library("caret")
+library("e1071")
+library("kknn")
+library("class")
+library("rpart")
+library("rpart.plot")
+library("rattle")
+library("RColorBrewer")
+options(stringsAsFactors = F)
+```
+
+# Глава 2. Оценка и предобработка данных.
+
+Примечание: данный фрагмент кода, как и подготовку данных выполнять не стоит, т.к. высланный дата фрейм уже с обработанными данными. Код здесь лишь показал как данные предобрабатывались. При желании могу выслать таблицы с синтетическими данными для того, чтобы попробовать то, как код будет работать.
+
+```{r, eval=FALSE}
+Acc_1_rate <- read.table("skor2.rpt", dec = ".", header = T, sep = "|", encoding = "UTF-8")
+colnames(Acc_1_rate)[1] <- "AccountID"
+names(Acc_1_rate)
+Groups <- read.xlsx("Groups2.xlsx", sheetIndex=1, header = T, encoding = "UTF-8")
+Groups$Группа <- str_replace_all(tolower(Groups$Группа),"[:space:]", "")
+Acc_1_rate$Groups_1 <- sapply(Acc_1_rate$Groups,function(n){
+  n <- tolower(unlist(str_split(n,",")))
+  n <- unique(str_replace_all(n,"[:space:]", ""))
+})
+Acc_1_rate$Groups_1 <- sapply(Acc_1_rate$Groups_1, function(x) {
+  ifelse(x == "", x <- "0", x)
+})
+Acc_1_rate$NumberGroups_1 <- sapply(Acc_1_rate$Groups_1, function(x) {
+  ifelse(x == "0", 0, length(x))
+})
+Acc_1_rate$NumberGroups_1 <- sapply(Acc_1_rate$NumberGroups_1, function(x) {
+  x[1]
+})
+Acc_1_rate$Groups_rate <- sapply(Acc_1_rate$Groups_1,function(x) {
+  Groups$Тяжесть[Groups$Группа%in%x]
+})
+Acc_1_rate$Groups_rate <- sapply(Acc_1_rate$Groups_rate,function(a) {
+  ifelse(is.na(a),0,as.numeric(a))
+})
+Acc_1_rate$Groups_rate[which(sapply(Acc_1_rate$Groups_rate, is.logical))] <- 0
+Acc_1_rate$sum_of_groups <- sapply(Acc_1_rate$Groups_rate, sum)
+Acc_1_rate$max_of_groups <- sapply(Acc_1_rate$Groups_rate, max)
+Acc_1_rate$rating <- ifelse(Acc_1_rate$profit < 0 & Acc_1_rate$max_of_groups > 1 | Acc_1_rate$max_of_groups >= 3, 1, 0)
+```
+
+В этой части произошла работа со второй таблицей
+```{r, eval = F}
+Acc <- read.table("skor1.rpt", dec = ".", header = T, sep = "|", encoding = "UTF-8")
+colnames(Acc)[1] <- "AccountID"
+Acc <- merge(Acc, Acc_1_rate[c(1, 45)])
+Acc$PlayerType[Acc$PlayerType==2] <- 1
+#Changing data
+Acc$citizenship <- abs(Acc$citizenship - 1)
+Acc$sms_validation <- abs(Acc$sms_validation - 1)
+# Age
+Acc$AccountCreationTime <- as.POSIXlt(as.Date(Acc$AccountCreationTime),tryFormats="%d.%m.%Y")
+Acc$AccountBirthDate <- as.POSIXlt(as.Date(Acc$AccountBirthDate),tryFormats="%d.%m.%Y")
+Acc$Age <- as.numeric(difftime(as.Date(Acc$AccountCreationTime),as.Date(Acc$AccountBirthDate),units="days"))%/%365
+Acc <- Acc[-c(2,3,5,6,11,13,14)]
+write.csv(Acc[-1], "Account_rating.csv")
+```
+
+## Импорт готового набора данных 
+
+```{r}
+Acc <- read.csv("Account_rating.csv")[-1]
+head(Acc)
+table(Acc$rating)
+```
+## Разбавление данных
+
+```{r}
+Acc <- rbind(Acc, Acc[Acc$rating == 1,], Acc[Acc$rating == 1,], Acc[Acc$rating == 1,])
+```
+
+## WOE binning
+```{r}
+(a <- woe.binning(Acc, "rating", "Age"))[[2]]
+a[[3]]
+Acc$Age_21 <- ifelse(Acc$Age <= 21, 1, 0)
+Acc$Age_33 <- ifelse(Acc$Age <= 33 & Acc$Age > 21, 1, 0)
+Acc$Age_m33 <- ifelse(Acc$Age > 33, 1, 0)
+Acc$Age_21_woe <- ifelse(Acc$Age <= 21, a[[2]]$woe[1], 0)
+Acc$Age_33_woe <- ifelse(Acc$Age <= 33 & Acc$Age > 21, a[[2]]$woe[2], 0)
+Acc$Age_m33_woe <- ifelse(Acc$Age > 33, a[[2]]$woe[3], 0)
+```
+
+## Создание нового набора данных для дальнейшей работы
+
+```{r}
+model <- Acc[-which(names(Acc) == "Age")]
+head(model)
+model_1 <- model[-which(names(model)== "Age_21" | names(model)== "Age_33" | names(model)== "Age_m33")]
+model <- model[-which(names(model)== "Age_21_woe" | names(model)== "Age_33_woe" | names(model)== "Age_m33_woe")]
+```
