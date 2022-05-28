@@ -1,0 +1,326 @@
+---
+title: "Kursovaya"
+author: "Govorova D.I."
+date: '21 05 2022 '
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Начало работы
+
+Подгрузка необходимых библиотек, установка директории и другое
+
+```{r, include=FALSE}
+rm(list=ls()) # Очистка списка переменных
+getwd() # Проверка рабочей директории
+setwd("Z:/project/В разработке/скоринг") # Установка необходимой директории
+# Подключение библиотек
+library("randomForest")
+library(lubridate)
+library(tidyr) # "Чистка" данных, приведение к опрятному виду
+library(dplyr) # Анализ данных
+library(stringr) # Работа со строками
+library("ggplot2") # Графики
+library(xlsx)
+library (pROC)
+library (ROCR)# ROC модели
+library("woeBinning")
+library("caret")
+library("e1071")
+library(kknn)
+library(class)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(RColorBrewer)
+options(stringsAsFactors = F)
+```
+
+```{r, eval = F}
+rm(list=ls())
+getwd()
+setwd("Z:/project/В разработке/скоринг")
+# Подключение библиотек
+library("randomForest")
+library("lubridate")
+library("tidyr") 
+library("dplyr") 
+library("stringr")
+library("ggplot2")
+library("xlsx")
+library ("pROC")
+library ("ROCR")
+library("woeBinning")
+library("caret")
+library("e1071")
+library("kknn")
+library("class")
+library("rpart")
+library("rpart.plot")
+library("rattle")
+library("RColorBrewer")
+options(stringsAsFactors = F)
+```
+
+# Глава 2. Оценка и предобработка данных.
+
+Примечание: данный фрагмент кода, как и подготовку данных выполнять не стоит, т.к. высланный дата фрейм уже с обработанными данными. Код здесь лишь показал как данные предобрабатывались. При желании могу выслать таблицы с синтетическими данными для того, чтобы попробовать то, как код будет работать.
+
+```{r, eval=FALSE}
+Acc_1_rate <- read.table("skor2.rpt", dec = ".", header = T, sep = "|", encoding = "UTF-8")
+colnames(Acc_1_rate)[1] <- "AccountID"
+names(Acc_1_rate)
+Groups <- read.xlsx("Groups2.xlsx", sheetIndex=1, header = T, encoding = "UTF-8")
+Groups$Группа <- str_replace_all(tolower(Groups$Группа),"[:space:]", "")
+Acc_1_rate$Groups_1 <- sapply(Acc_1_rate$Groups,function(n){
+  n <- tolower(unlist(str_split(n,",")))
+  n <- unique(str_replace_all(n,"[:space:]", ""))
+})
+Acc_1_rate$Groups_1 <- sapply(Acc_1_rate$Groups_1, function(x) {
+  ifelse(x == "", x <- "0", x)
+})
+Acc_1_rate$NumberGroups_1 <- sapply(Acc_1_rate$Groups_1, function(x) {
+  ifelse(x == "0", 0, length(x))
+})
+Acc_1_rate$NumberGroups_1 <- sapply(Acc_1_rate$NumberGroups_1, function(x) {
+  x[1]
+})
+Acc_1_rate$Groups_rate <- sapply(Acc_1_rate$Groups_1,function(x) {
+  Groups$Тяжесть[Groups$Группа%in%x]
+})
+Acc_1_rate$Groups_rate <- sapply(Acc_1_rate$Groups_rate,function(a) {
+  ifelse(is.na(a),0,as.numeric(a))
+})
+Acc_1_rate$Groups_rate[which(sapply(Acc_1_rate$Groups_rate, is.logical))] <- 0
+Acc_1_rate$sum_of_groups <- sapply(Acc_1_rate$Groups_rate, sum)
+Acc_1_rate$max_of_groups <- sapply(Acc_1_rate$Groups_rate, max)
+Acc_1_rate$rating <- ifelse(Acc_1_rate$profit < 0 & Acc_1_rate$max_of_groups > 1 | Acc_1_rate$max_of_groups >= 3, 1, 0)
+```
+
+В этой части произошла работа со второй таблицей
+```{r, eval = F}
+Acc <- read.table("skor1.rpt", dec = ".", header = T, sep = "|", encoding = "UTF-8")
+colnames(Acc)[1] <- "AccountID"
+Acc <- merge(Acc, Acc_1_rate[c(1, 45)])
+Acc$PlayerType[Acc$PlayerType==2] <- 1
+#Changing data
+Acc$citizenship <- abs(Acc$citizenship - 1)
+Acc$sms_validation <- abs(Acc$sms_validation - 1)
+# Age
+Acc$AccountCreationTime <- as.POSIXlt(as.Date(Acc$AccountCreationTime),tryFormats="%d.%m.%Y")
+Acc$AccountBirthDate <- as.POSIXlt(as.Date(Acc$AccountBirthDate),tryFormats="%d.%m.%Y")
+Acc$Age <- as.numeric(difftime(as.Date(Acc$AccountCreationTime),as.Date(Acc$AccountBirthDate),units="days"))%/%365
+Acc <- Acc[-c(2,3,5,6,11,13,14)]
+write.csv(Acc[-1], "Account_rating.csv")
+```
+
+## Импорт готового набора данных 
+
+```{r}
+Acc <- read.csv("Account_rating.csv")[-1]
+head(Acc)
+table(Acc$rating)
+```
+## Разбавление данных
+
+```{r}
+Acc <- rbind(Acc, Acc[Acc$rating == 1,], Acc[Acc$rating == 1,], Acc[Acc$rating == 1,])
+```
+
+## WOE binning
+```{r}
+(a <- woe.binning(Acc, "rating", "Age"))[[2]]
+a[[3]]
+Acc$Age_21 <- ifelse(Acc$Age <= 21, 1, 0)
+Acc$Age_33 <- ifelse(Acc$Age <= 33 & Acc$Age > 21, 1, 0)
+Acc$Age_m33 <- ifelse(Acc$Age > 33, 1, 0)
+Acc$Age_21_woe <- ifelse(Acc$Age <= 21, a[[2]]$woe[1], 0)
+Acc$Age_33_woe <- ifelse(Acc$Age <= 33 & Acc$Age > 21, a[[2]]$woe[2], 0)
+Acc$Age_m33_woe <- ifelse(Acc$Age > 33, a[[2]]$woe[3], 0)
+```
+
+## Создание нового набора данных для дальнейшей работы
+
+```{r}
+model <- Acc[-which(names(Acc) == "Age")]
+head(model)
+model_1 <- model[-which(names(model)== "Age_21" | names(model)== "Age_33" | names(model)== "Age_m33")]
+model <- model[-which(names(model)== "Age_21_woe" | names(model)== "Age_33_woe" | names(model)== "Age_m33_woe")]
+```
+
+# Глава 3. Построение моделей.
+
+## Поиск переменных с дисперсией близкой к 0
+
+```{r}
+names(model)[(nz <- nearZeroVar(model))]
+model <- model[, -nz]
+names(model_1)[(nz <- nearZeroVar(model_1))]
+model_1 <- model_1[, -nz]
+```
+
+## Создание обучающей и тестовой выборки
+
+```{r}
+set.seed(105610)
+tr.index <- createDataPartition(factor(model$rating), p = .8, list = F)
+train.model <- model[tr.index,]
+test.model <- model[-tr.index,]
+```
+
+## Decision tree
+
+### Построение модели
+```{r}
+set.seed(1403)
+model_tree <- rpart(rating ~ ., data = train.model,
+                        method = "class", control = rpart.control(cp = 0.0003))
+```
+
+### Графическое отображение полученного дерева
+
+```{r}
+fancyRpartPlot(model_tree)
+```
+
+### Запись предсказаний и матрицы ошибок
+
+```{r}
+predict_td <- predict(model_tree, newdata = test.model, type = "class")
+conf_matr_td <- confusionMatrix(as.factor(test.model$rating), as.factor(predict_td))
+```
+
+## Random forest
+
+### Построение модели
+
+```{r, warning=F}
+model_random_forest <- randomForest(rating ~ ., data = train.model, ntree = 500, 
+                                    random_state = 0)
+```
+
+### Запись предсказаний и матрицы ошибок
+
+```{r}
+predict_rf <- as.data.frame(predict(model_tree, newdata = test.model))
+predict_rf$pred <- ifelse(predict_rf$`0` > predict_rf$`1`, 0 , 1)
+predict_rf <- predict_rf$pred
+conf_matr_rf <- confusionMatrix(as.factor(test.model$rating), as.factor(predict_rf))
+```
+
+## Logistic regression
+
+### Устранение мультиколлинеарности
+
+```{r}
+model_pca <- prcomp(model_1[-which(names(model_1) == "rating")])
+summary(model_pca)
+```
+
+### Выборка для главных компонент
+```{r}
+model_pca <- as.data.frame(model_pca$x)[1:2]
+model_pca$rating <- model$rating
+set.seed(105610)
+tr.index <- createDataPartition(factor(model_pca$rating), p = .8, list = F)
+train.model.pca <- model_pca[tr.index,]
+test.model.pca <- model_pca[-tr.index,]
+set.seed(105610)
+tr.index <- createDataPartition(factor(model_1$rating), p = .8, list = F)
+train.model <- model_1[tr.index,]
+test.model <- model_1[-tr.index,]
+```
+### Построение модели по изначальным данным (включая спуск по критерию Акаике)
+
+```{r, warning=F}
+model_log_reg <- glm(rating ~ ., data = train.model, family = binomial(logit))
+model_log_reg <- step(model_log_reg)
+```
+
+#### Выбор оптимального порога вероятности
+
+```{r}
+predict_lr <- predict(model_log_reg, newdata = train.model, type = "response")
+train <- as.data.frame(cbind(train.model$rating, predict_lr))
+pred_fit <- prediction(train$predict_lr, train$V1)
+perf_fit <- performance(pred_fit, "tpr", "fpr")
+perf3 <- performance(pred_fit, x.measure = "cutoff", measure = "spec")
+perf4 <- performance(pred_fit, x.measure = "cutoff", measure = "sens")
+perf5 <- performance(pred_fit, x.measure = "cutoff", measure = "acc")
+plot(perf3, col = "red", lwd = 2)
+plot(add = T, perf4, col = "green", lwd = 2)
+plot(add = T, perf5, lwd = 2)
+abline(v = 0.394, lwd = 2)
+```
+
+#### Запись предсказаний и матрицы ошибок
+
+```{r}
+predict_lr <- ifelse(predict(model_log_reg, newdata = test.model, type = "response") > 0.394, 1, 0)
+conf_matr_lr <- confusionMatrix(as.factor(test.model$rating), as.factor(predict_lr))
+```
+
+### Построение модели по данным из метода главных компонент
+
+```{r, warning=F}
+model_log_reg_pca <- glm(rating ~ ., data = train.model.pca, family = binomial(logit))
+model_log_reg_pca <- step(model_log_reg_pca)
+```
+
+#### Выбор оптимального порога вероятности
+
+```{r}
+predict_lr_pca <- predict(model_log_reg_pca, newdata = train.model.pca, type = "response")
+train <- as.data.frame(cbind(train.model.pca$rating, predict_lr_pca))
+pred_fit <- prediction(train$predict_lr_pca, train$V1)
+perf_fit <- performance(pred_fit, "tpr", "fpr")
+perf3 <- performance(pred_fit, x.measure = "cutoff", measure = "spec")
+perf4 <- performance(pred_fit, x.measure = "cutoff", measure = "sens")
+perf5 <- performance(pred_fit, x.measure = "cutoff", measure = "acc")
+plot(perf3, col = "red", lwd = 2)
+plot(add = T, perf4, col = "green", lwd = 2)
+plot(add = T, perf5, lwd = 2)
+abline(v = 0.389, lwd = 2)
+```
+
+#### Запись предсказаний и матрицы ошибок
+
+```{r}
+predict_lr_pca <- ifelse(predict(model_log_reg_pca, newdata = test.model.pca, type = "response") > 0.389, 1, 0)
+conf_matr_lr_pca <- confusionMatrix(as.factor(test.model.pca$rating), as.factor(predict_lr_pca))
+
+```
+
+# Глава 4. Оценка результатов
+
+## Матрица ошибок
+
+```{r}
+# Tree decision
+conf_matr_td$table
+# Random forest
+conf_matr_rf$table
+# Log reg
+conf_matr_lr$table
+# Log reg pca
+conf_matr_lr_pca$table
+```
+
+## Метрики качества
+
+```{r}
+# Tree decision
+conf_matr_td$byClass
+# Random forest
+conf_matr_rf$byClass
+# Log reg
+conf_matr_lr$byClass
+# Log reg pca
+conf_matr_lr_pca$byClass
+```
